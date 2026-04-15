@@ -1,4 +1,5 @@
 """Entry-point for Application 2: False Positive Minimizer."""
+import argparse
 import logging
 import os
 import sys
@@ -18,6 +19,11 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="False Positive Minimizer")
+    parser.add_argument("--max-alerts", type=int, default=None,
+                        help="Process at most N alerts then exit (default: unlimited)")
+    args = parser.parse_args()
+
     # Validate API key
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -44,7 +50,7 @@ def main() -> None:
     logger.info("Starting FPM polling loop...")
     from fpm.polling import FPMPoller
 
-    poller = FPMPoller(openai_client, retriever)
+    poller = FPMPoller(openai_client, retriever, max_alerts=args.max_alerts)
     try:
         poller.run()
     except KeyboardInterrupt:

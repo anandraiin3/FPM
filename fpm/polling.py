@@ -29,6 +29,7 @@ class FPMPoller:
         retriever,
         base_url: str | None = None,
         poll_interval: int | None = None,
+        max_alerts: int | None = None,
     ):
         self._openai = openai_client
         self._retriever = retriever
@@ -42,6 +43,8 @@ class FPMPoller:
         )
         self._http = httpx.Client(timeout=30.0)
         self._running = True
+        self._max_alerts = max_alerts
+        self._processed_count = 0
 
     def run(self) -> None:
         """Main polling loop. Runs until stopped."""
@@ -78,6 +81,12 @@ class FPMPoller:
         logger.info("Found %d pending alert(s)", len(alerts))
 
         for alert in alerts:
+            # Check if we've hit the max alerts limit
+            if self._max_alerts is not None and self._processed_count >= self._max_alerts:
+                logger.info("Reached max_alerts limit (%d), stopping", self._max_alerts)
+                self._running = False
+                return
+
             alert_id = alert.get("alert_id", "unknown")
             try:
                 logger.info("Processing alert %s (%s → %s)",
@@ -85,10 +94,13 @@ class FPMPoller:
 
                 verdict = analyse_alert(alert, self._openai, self._retriever)
                 self._post_verdict(alert_id, verdict)
+                self._processed_count += 1
 
                 logger.info(
-                    "Verdict posted for %s: %s (confidence=%.2f)",
+                    "Verdict posted for %s: %s (confidence=%.2f) [%d/%s processed]",
                     alert_id, verdict["verdict"], verdict["confidence"],
+                    self._processed_count,
+                    str(self._max_alerts) if self._max_alerts else "∞",
                 )
 
             except Exception as e:

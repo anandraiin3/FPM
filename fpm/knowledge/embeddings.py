@@ -37,8 +37,10 @@ class KnowledgeStore:
 
     def embed_text(self, text: str) -> list[float]:
         """Get embedding for a single text."""
+        # text-embedding-3-small has 8192 token limit; truncate long texts
+        truncated = _truncate_for_embedding(text)
         response = self._openai.embeddings.create(
-            input=text,
+            input=truncated,
             model=EMBEDDING_MODEL,
         )
         return response.data[0].embedding
@@ -46,9 +48,9 @@ class KnowledgeStore:
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Get embeddings for a batch of texts (max 2048 per call)."""
         all_embeddings: list[list[float]] = []
-        batch_size = 100  # safe batch size
+        batch_size = 5  # small batch size to avoid token-per-batch limits
         for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
+            batch = [_truncate_for_embedding(t) for t in texts[i : i + batch_size]]
             response = self._openai.embeddings.create(
                 input=batch,
                 model=EMBEDDING_MODEL,
@@ -131,3 +133,18 @@ class KnowledgeStore:
                 "distance": results["distances"][0][i] if results["distances"] else 0.0,
             })
         return hits
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_MAX_EMBED_CHARS = 20_000  # ~5k tokens at ~4 chars/token, safe under 8192 limit
+
+
+def _truncate_for_embedding(text: str) -> str:
+    """Truncate text to fit within the embedding model's token limit."""
+    if len(text) <= _MAX_EMBED_CHARS:
+        return text
+    logger.debug("Truncating text from %d to %d chars for embedding", len(text), _MAX_EMBED_CHARS)
+    return text[:_MAX_EMBED_CHARS]

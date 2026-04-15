@@ -2,8 +2,9 @@
 Orchestrator agent — receives an alert, delegates to specialists,
 synthesises findings, and produces a verdict.
 
-Uses OpenAI Agents SDK with handoffs to specialist agents.
+Uses OpenAI Agents SDK with async tool functions to avoid nested event loop issues.
 """
+import asyncio
 import json
 import logging
 import time
@@ -39,11 +40,11 @@ class OrchestratorContext:
 
 
 # ---------------------------------------------------------------------------
-# Tools for the orchestrator
+# Tools for the orchestrator (async to avoid nested event loop)
 # ---------------------------------------------------------------------------
 
 @function_tool
-def analyse_waf_layer(
+async def analyse_waf_layer(
     ctx: RunContextWrapper[OrchestratorContext],
     alert_summary: str,
 ) -> str:
@@ -67,13 +68,13 @@ def analyse_waf_layer(
     )
 
     with custom_span("waf_specialist"):
-        result = Runner.run_sync(WAF_AGENT, input=prompt, context=specialist_ctx)
+        result = await Runner.run(WAF_AGENT, input=prompt, context=specialist_ctx)
     oc.specialist_results["waf"] = result.final_output
     return result.final_output
 
 
 @function_tool
-def analyse_gateway_layer(
+async def analyse_gateway_layer(
     ctx: RunContextWrapper[OrchestratorContext],
     alert_summary: str,
 ) -> str:
@@ -97,13 +98,13 @@ def analyse_gateway_layer(
     )
 
     with custom_span("kong_specialist"):
-        result = Runner.run_sync(KONG_AGENT, input=prompt, context=specialist_ctx)
+        result = await Runner.run(KONG_AGENT, input=prompt, context=specialist_ctx)
     oc.specialist_results["gateway"] = result.final_output
     return result.final_output
 
 
 @function_tool
-def analyse_network_layer(
+async def analyse_network_layer(
     ctx: RunContextWrapper[OrchestratorContext],
     alert_summary: str,
 ) -> str:
@@ -127,7 +128,7 @@ def analyse_network_layer(
     )
 
     with custom_span("network_specialist"):
-        result = Runner.run_sync(NETWORK_AGENT, input=prompt, context=specialist_ctx)
+        result = await Runner.run(NETWORK_AGENT, input=prompt, context=specialist_ctx)
     oc.specialist_results["network"] = result.final_output
     return result.final_output
 
@@ -189,48 +190,66 @@ def analyse_alert(
     alert_id = alert.get("alert_id", "unknown")
     start_time = time.time()
 
-    with trace(f"fpm-alert-{alert_id}"):
-        # Step 1: Rewrite query
-        with custom_span("query_rewrite"):
-            rewritten_query = rewrite_query(alert, openai_client)
-
-        # Step 2: Run orchestrator
-        oc = OrchestratorContext(openai_client, retriever, alert)
-        oc.rewritten_query = rewritten_query
-
-        alert_prompt = (
-            f"Analyse this security alert and determine if it is a false positive.\n\n"
-            f"Alert ID: {alert.get('alert_id', '')}\n"
-            f"Attack Type: {alert.get('attack_type', '')}\n"
-            f"Target Endpoint: {alert.get('target_endpoint', '')}\n"
-            f"HTTP Method: {alert.get('http_method', '')}\n"
-            f"Severity: {alert.get('severity', '')}\n"
-            f"Source IP: {alert.get('source_ip', '')}\n"
-            f"Traceable Reason: {alert.get('traceable_reason', '')}\n"
-            f"Payload: {alert.get('payload_snippet', '')}\n"
-            f"HTTP Response Status: {_get_response_status(alert)}\n\n"
-            f"Optimised retrieval query: {rewritten_query}"
-        )
-
-        with custom_span("orchestrator_run"):
-            result = Runner.run_sync(
-                ORCHESTRATOR_AGENT,
-                input=alert_prompt,
-                context=oc,
-            )
+    # Run the async orchestrator in a new event loop to avoid conflicts
+    result_data = _run_orchestrator(alert, openai_client, retriever)
 
     elapsed_ms = int((time.time() - start_time) * 1000)
 
-    # Parse the orchestrator's final output as JSON
-    verdict_data = _parse_verdict(result.final_output, alert_id)
-    verdict_data["tokens_used"] = _estimate_tokens(result)
-    verdict_data["analysis_latency_ms"] = elapsed_ms
+    result_data["analysis_latency_ms"] = elapsed_ms
 
     logger.info(
         "Alert %s → %s (confidence=%.2f, latency=%dms)",
-        alert_id, verdict_data["verdict"], verdict_data["confidence"], elapsed_ms,
+        alert_id, result_data["verdict"], result_data["confidence"], elapsed_ms,
     )
-    return verdict_data
+    return result_data
+
+
+def _run_orchestrator(alert: dict, openai_client, retriever) -> dict:
+    """Run the orchestrator in a fresh event loop."""
+    alert_id = alert.get("alert_id", "unknown")
+
+    async def _async_run():
+        with trace(f"fpm-alert-{alert_id}"):
+            # Step 1: Rewrite query
+            with custom_span("query_rewrite"):
+                rewritten_query = rewrite_query(alert, openai_client)
+
+            # Step 2: Run orchestrator
+            oc = OrchestratorContext(openai_client, retriever, alert)
+            oc.rewritten_query = rewritten_query
+
+            alert_prompt = (
+                f"Analyse this security alert and determine if it is a false positive.\n\n"
+                f"Alert ID: {alert.get('alert_id', '')}\n"
+                f"Attack Type: {alert.get('attack_type', '')}\n"
+                f"Target Endpoint: {alert.get('target_endpoint', '')}\n"
+                f"HTTP Method: {alert.get('http_method', '')}\n"
+                f"Severity: {alert.get('severity', '')}\n"
+                f"Source IP: {alert.get('source_ip', '')}\n"
+                f"Traceable Reason: {alert.get('traceable_reason', '')}\n"
+                f"Payload: {alert.get('payload_snippet', '')}\n"
+                f"HTTP Response Status: {_get_response_status(alert)}\n\n"
+                f"Optimised retrieval query: {rewritten_query}"
+            )
+
+            with custom_span("orchestrator_run"):
+                result = await Runner.run(
+                    ORCHESTRATOR_AGENT,
+                    input=alert_prompt,
+                    context=oc,
+                )
+
+            # Parse the orchestrator's final output as JSON
+            verdict_data = _parse_verdict(result.final_output, alert_id)
+            verdict_data["tokens_used"] = _estimate_tokens(result)
+            return verdict_data
+
+    # Create a new event loop for each alert to avoid conflicts
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_async_run())
+    finally:
+        loop.close()
 
 
 def _get_response_status(alert: dict) -> str:
@@ -286,8 +305,6 @@ def _parse_verdict(raw_output: str, alert_id: str) -> dict:
 
 def _estimate_tokens(result) -> int:
     """Estimate total tokens used across the run. Best-effort."""
-    # The Agents SDK doesn't expose per-run token counts directly,
-    # so we estimate based on the raw_responses if available.
     try:
         total = 0
         if hasattr(result, "raw_responses"):
