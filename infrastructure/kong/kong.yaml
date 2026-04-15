@@ -1,0 +1,413 @@
+# ===========================================================================
+# Kong Gateway Declarative Configuration
+# Services, Routes, and Plugins for API security posture.
+# ===========================================================================
+
+_format_version: "3.0"
+
+# ===========================================================================
+# Services
+# ===========================================================================
+services:
+  # ── User Service ──
+  - name: user-service
+    url: http://10.0.10.60:8081
+    protocol: http
+    connect_timeout: 5000
+    read_timeout: 10000
+    write_timeout: 10000
+    routes:
+      - name: users-route
+        paths:
+          - /api/v1/users
+        methods:
+          - GET
+          - POST
+        strip_path: false
+    plugins:
+      - name: jwt
+        config:
+          claims_to_verify:
+            - exp
+          key_claim_name: iss
+          secret_is_base64: false
+      - name: request-validator
+        config:
+          allowed_content_types:
+            - application/json
+      - name: acl
+        config:
+          allow:
+            - users-group
+
+  # ── User Export Sub-route (Sensitive Data) ──
+  - name: user-export-service
+    url: http://10.0.10.60:8081/export
+    protocol: http
+    routes:
+      - name: users-export-route
+        paths:
+          - /api/v1/users/export
+        methods:
+          - GET
+        strip_path: false
+    plugins:
+      - name: oauth2
+        config:
+          scopes:
+            - "users:read:export"
+          mandatory_scope: true
+          enable_authorization_code: true
+      - name: ip-restriction
+        config:
+          deny:
+            - 203.0.113.0/24
+
+  # ── User by ID (BOLA-susceptible) ──
+  - name: user-by-id-service
+    url: http://10.0.10.60:8081
+    protocol: http
+    routes:
+      - name: users-by-id-route
+        paths:
+          - /api/v1/users/(?P<id>\d+)
+        methods:
+          - GET
+        strip_path: false
+    plugins:
+      - name: jwt
+        config:
+          claims_to_verify:
+            - exp
+            - sub
+          key_claim_name: iss
+      - name: request-termination
+        config:
+          status_code: 401
+          message: "JWT sub claim must match requested user ID"
+        enabled: false  # Enabled via custom plugin logic at runtime
+
+  # ── Search Service ──
+  - name: search-service
+    url: http://10.0.10.61:8082
+    protocol: http
+    routes:
+      - name: search-route
+        paths:
+          - /api/v1/search
+        methods:
+          - GET
+          - POST
+        strip_path: false
+    plugins:
+      - name: request-validator
+        config:
+          allowed_content_types:
+            - application/json
+          body_schema: |
+            {
+              "type": "object",
+              "properties": {
+                "q": {"type": "string", "maxLength": 500}
+              }
+            }
+
+  # ── Order Service ──
+  - name: order-service
+    url: http://10.0.10.62:8083
+    protocol: http
+    routes:
+      - name: orders-route
+        paths:
+          - /api/v1/orders
+        methods:
+          - GET
+          - POST
+        strip_path: false
+    plugins:
+      - name: jwt
+        config:
+          claims_to_verify:
+            - exp
+          key_claim_name: iss
+
+  # ── Internal Config (restricted) ──
+  - name: internal-config-service
+    url: http://10.0.10.60:8081/internal/config
+    protocol: http
+    routes:
+      - name: internal-config-route
+        paths:
+          - /api/v1/internal/config
+        methods:
+          - GET
+        strip_path: false
+    plugins:
+      - name: ip-restriction
+        config:
+          allow:
+            - 10.0.0.0/16
+      - name: key-auth
+        config:
+          key_names:
+            - X-Service-Key
+
+  # ── Internal Admin (restricted) ──
+  - name: internal-admin-service
+    url: http://10.0.10.60:8081/internal/admin
+    protocol: http
+    routes:
+      - name: internal-admin-route
+        paths:
+          - /api/v1/internal/admin
+        methods:
+          - GET
+        strip_path: false
+    plugins:
+      - name: ip-restriction
+        config:
+          allow:
+            - 10.0.0.0/16
+      - name: jwt
+        config:
+          claims_to_verify:
+            - exp
+            - role
+      - name: acl
+        config:
+          allow:
+            - admin-group
+
+  # ── Auth Service (login + auth) ──
+  - name: auth-service
+    url: http://10.0.10.63:8084
+    protocol: http
+    routes:
+      - name: login-route
+        paths:
+          - /api/v1/login
+        methods:
+          - POST
+        strip_path: false
+      - name: auth-route
+        paths:
+          - /api/v1/auth
+        methods:
+          - POST
+        strip_path: false
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 10
+          policy: local
+          fault_tolerant: true
+      - name: ip-restriction
+        config:
+          deny:
+            - 203.0.113.0/24
+
+  # ── Products Service ──
+  - name: products-service
+    url: http://10.0.10.64:8085
+    protocol: http
+    routes:
+      - name: products-route
+        paths:
+          - /api/v1/products
+        methods:
+          - GET
+        strip_path: false
+    plugins:
+      - name: bot-detection
+        config:
+          deny:
+            - HeadlessChrome
+            - PhantomJS
+            - Scrapy
+            - python-requests
+
+  # ── Data Service (API key exposure protection) ──
+  - name: data-service
+    url: http://10.0.10.65:8086
+    protocol: http
+    routes:
+      - name: data-route
+        paths:
+          - /api/v1/data
+        methods:
+          - GET
+        strip_path: false
+    plugins:
+      - name: request-transformer
+        config:
+          remove:
+            querystring:
+              - api_key
+          add:
+            headers:
+              - "X-Api-Key-Stripped: true"
+
+  # ── Upload Service ──
+  - name: upload-service
+    url: http://10.0.10.66:8087
+    protocol: http
+    routes:
+      - name: upload-route
+        paths:
+          - /api/v1/upload
+        methods:
+          - POST
+        strip_path: false
+    plugins:
+      - name: request-size-limiting
+        config:
+          allowed_payload_size: 10
+          size_unit: megabytes
+
+  # ── Files Service (path traversal target) ──
+  - name: files-service
+    url: http://10.0.10.67:8088
+    protocol: http
+    routes:
+      - name: files-route
+        paths:
+          - /api/v1/files
+        methods:
+          - GET
+        strip_path: false
+    plugins:
+      - name: request-validator
+        config:
+          allowed_content_types:
+            - application/json
+
+  # ── Exec Service (command injection target) ──
+  - name: exec-service
+    url: http://10.0.10.68:8089
+    protocol: http
+    routes:
+      - name: exec-route
+        paths:
+          - /api/v1/exec
+        methods:
+          - POST
+        strip_path: false
+    plugins:
+      - name: ip-restriction
+        config:
+          allow:
+            - 10.0.0.0/16
+      - name: request-validator
+        config:
+          allowed_content_types:
+            - application/json
+
+  # ── Fetch Service (SSRF target) ──
+  - name: fetch-service
+    url: http://10.0.10.69:8085
+    protocol: http
+    routes:
+      - name: fetch-route
+        paths:
+          - /api/v1/fetch
+        methods:
+          - POST
+        strip_path: false
+    plugins:
+      - name: ip-restriction
+        config:
+          allow:
+            - 10.0.0.0/16
+
+  # ── Reset-password Service ──
+  - name: reset-password-service
+    url: http://10.0.10.63:8084/reset-password
+    protocol: http
+    routes:
+      - name: reset-password-route
+        paths:
+          - /api/v1/reset-password
+        methods:
+          - POST
+        strip_path: false
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 3
+          policy: local
+          fault_tolerant: true
+
+  # ── XML Service ──
+  - name: xml-service
+    url: http://10.0.10.70:8090
+    protocol: http
+    routes:
+      - name: xml-route
+        paths:
+          - /api/v1/xml
+        methods:
+          - POST
+        strip_path: false
+    plugins:
+      - name: request-validator
+        config:
+          allowed_content_types:
+            - application/json
+            - application/xml
+
+  # ── Validate Service (ReDoS target) ──
+  - name: validate-service
+    url: http://10.0.10.71:8091
+    protocol: http
+    routes:
+      - name: validate-route
+        paths:
+          - /api/v1/validate
+        methods:
+          - POST
+        strip_path: false
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 20
+          policy: local
+          fault_tolerant: true
+
+  # ── Report Service v1 (authenticated) ──
+  - name: report-service-v1
+    url: http://10.0.10.72:8092
+    protocol: http
+    routes:
+      - name: reports-v1-route
+        paths:
+          - /api/v1/reports
+        methods:
+          - GET
+        strip_path: false
+    plugins:
+      - name: jwt
+        config:
+          claims_to_verify:
+            - exp
+      - name: acl
+        config:
+          allow:
+            - reports-group
+
+  # ── Report Service v2 — TRUE POSITIVE: NO AUTH PLUGIN ──
+  # This route was added during a fast migration to v2.
+  # The team forgot to attach any authentication plugin.
+  # No WAF rule covers it. The network SG allows internal traffic.
+  # This is the GENUINE THREAT — the one true positive.
+  - name: report-service-v2
+    url: http://10.0.10.72:8092/v2
+    protocol: http
+    routes:
+      - name: reports-v2-route
+        paths:
+          - /api/v2/reports
+        methods:
+          - GET
+        strip_path: false
+    # ⚠️ NO PLUGINS — no auth, no rate-limiting, no validation.
+    # This is intentionally unprotected.
