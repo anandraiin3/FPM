@@ -19,10 +19,11 @@ logger = logging.getLogger(__name__)
 class SpecialistContext:
     """Runtime context passed to specialist tool functions."""
 
-    def __init__(self, retriever, rewritten_query: str, alert: dict):
+    def __init__(self, retriever, rewritten_query: str, alert: dict, reachability_analyzer=None):
         self.retriever = retriever
         self.rewritten_query = rewritten_query
         self.alert = alert
+        self.reachability_analyzer = reachability_analyzer
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +99,35 @@ def search_network_controls(
     } for r in net_results], indent=2)
 
 
+@function_tool
+def analyse_reachability(
+    ctx: RunContextWrapper[SpecialistContext],
+    target_endpoint: str,
+    source_ip: str = "",
+) -> str:
+    """Perform reachability analysis on a target endpoint to determine if it is
+    accessible from the internet or specific sources. Traces the full network path
+    through security groups, identifying which security layers (WAF, ALB, Kong Gateway)
+    traffic passes through and which are bypassed.
+
+    Args:
+        target_endpoint: The API path to analyse (e.g. /api/v1/graphql, /api/internal/analytics)
+        source_ip: Optional source IP address to check specific reachability from
+    """
+    analyzer = ctx.context.reachability_analyzer
+    if analyzer is None:
+        return json.dumps({
+            "error": "Reachability analyzer not available",
+            "summary": "Cannot perform reachability analysis — Terraform controls not loaded",
+        })
+
+    result = analyzer.analyse_endpoint(
+        target_endpoint=target_endpoint,
+        source_ip=source_ip if source_ip else None,
+    )
+    return analyzer.to_json(result)
+
+
 # ---------------------------------------------------------------------------
 # Specialist agent definitions
 # ---------------------------------------------------------------------------
@@ -144,8 +174,24 @@ NETWORK_AGENT = Agent(
     model="gpt-4o-mini",
     instructions=_SPECIALIST_INSTRUCTIONS_BASE + """
 
-Your scope: Terraform security groups, NACLs, and WAF rule group associations ONLY.
-You must determine whether network-level controls (IP restrictions, ingress/egress rules, CIDR blocks, WAF associations) prevent the threat described in the alert.
-Focus on: which security group governs the target service, whether the source IP is allowed/denied, and whether WAF rules are associated.""",
-    tools=[search_network_controls],
+Your scope: Terraform security groups, NACLs, WAF rule group associations, and NETWORK REACHABILITY analysis.
+
+You have TWO tools:
+1. search_network_controls — searches the knowledge base for security groups, NACLs, WAF ACLs
+2. analyse_reachability — performs reachability analysis on a target endpoint
+
+You MUST call analyse_reachability with the alert's target_endpoint and source_ip to determine:
+- Whether the endpoint is reachable from the internet
+- Which security layers (WAF, ALB, Kong) traffic passes through to reach it
+- Which layers are BYPASSED (this is critical for identifying true positives)
+- What the full network path looks like (e.g. Internet -> ALB SG -> Kong SG -> Service SG)
+- The risk level based on exposure
+
+After reachability analysis, also search for specific network controls relevant to the alert.
+
+Your findings JSON must include an additional field:
+- "reachability": object with is_internet_reachable, risk_level, path_description, layers_bypassed
+
+This reachability analysis is essential — a service that bypasses Kong Gateway has NO auth/rate-limit protection at the gateway layer, and a service that bypasses the ALB has NO WAF protection.""",
+    tools=[search_network_controls, analyse_reachability],
 )

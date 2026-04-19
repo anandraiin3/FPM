@@ -46,11 +46,30 @@ def main() -> None:
 
     retriever = HybridRetriever(store)
 
-    # Step 3: Start polling loop
+    # Step 3: Build reachability analyzer from Terraform configs
+    logger.info("Building reachability analyzer from Terraform configs...")
+    from fpm.parsers.terraform_parser import parse_terraform
+    from fpm.analysis.reachability import ReachabilityAnalyzer
+
+    infra_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "infrastructure")
+    tf_dir = os.path.join(infra_dir, "terraform")
+    tf_controls = []
+    if os.path.isdir(tf_dir):
+        for fname in sorted(os.listdir(tf_dir)):
+            if fname.endswith(".tf"):
+                tf_controls.extend(parse_terraform(os.path.join(tf_dir, fname)))
+    reachability_analyzer = ReachabilityAnalyzer(tf_controls)
+    logger.info("Reachability analyzer built with %d Terraform controls", len(tf_controls))
+
+    # Step 4: Start polling loop
     logger.info("Starting FPM polling loop...")
     from fpm.polling import FPMPoller
 
-    poller = FPMPoller(openai_client, retriever, max_alerts=args.max_alerts)
+    poller = FPMPoller(
+        openai_client, retriever,
+        max_alerts=args.max_alerts,
+        reachability_analyzer=reachability_analyzer,
+    )
     try:
         poller.run()
     except KeyboardInterrupt:
