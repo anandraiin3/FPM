@@ -17,6 +17,29 @@ def parse_kong(file_path: str) -> list[dict]:
     data = yaml.safe_load(text)
     controls: list[dict] = []
 
+    # ── Global plugins (applied to all routes) ──
+    global_plugins = data.get("plugins", [])
+    for plugin in global_plugins:
+        plugin_name = plugin.get("name", "unknown")
+        plugin_config = plugin.get("config", {})
+        plugin_block = yaml.dump({
+            "scope": "global",
+            "plugin": plugin_name,
+            "config": plugin_config,
+        }, default_flow_style=False)
+        controls.append({
+            "control_id": f"kong-global-plugin:{plugin_name}",
+            "control_type": "global_plugin",
+            "layer": "Gateway",
+            "source_file": file_path,
+            "raw_block": plugin_block,
+            "metadata": {
+                "scope": "global",
+                "plugin_name": plugin_name,
+                "plugin_config": plugin_config,
+            },
+        })
+
     for svc in data.get("services", []):
         svc_name = svc.get("name", "unknown")
         svc_url = svc.get("url", "")

@@ -1,9 +1,33 @@
 # ===========================================================================
 # Kong Gateway Declarative Configuration
-# Services, Routes, and Plugins for API security posture.
+# Production-grade: services, routes, plugins for comprehensive API security.
+# Includes OIDC, mTLS, GraphQL depth limiting, gRPC auth, canary releases,
+# CORS enforcement, response transformation, and webhook signature validation.
 # ===========================================================================
 
 _format_version: "3.0"
+
+# ===========================================================================
+# Global Plugins (applied to all routes)
+# ===========================================================================
+plugins:
+  - name: correlation-id
+    config:
+      header_name: X-Request-ID
+      generator: uuid#counter
+      echo_downstream: true
+
+  - name: response-transformer
+    config:
+      remove:
+        headers:
+          - X-Powered-By
+          - Server
+          - X-AspNet-Version
+      add:
+        headers:
+          - "X-Content-Type-Options: nosniff"
+          - "X-Frame-Options: DENY"
 
 # ===========================================================================
 # Services
@@ -225,6 +249,20 @@ services:
             - PhantomJS
             - Scrapy
             - python-requests
+      - name: proxy-cache
+        config:
+          response_code:
+            - 200
+          request_method:
+            - GET
+          content_type:
+            - application/json
+          cache_ttl: 300
+          strategy: memory
+          cache_control: true
+          vary_headers:
+            - Accept
+            - Accept-Encoding
 
   # ── Data Service (API key exposure protection) ──
   - name: data-service
@@ -409,5 +447,411 @@ services:
         methods:
           - GET
         strip_path: false
-    # ⚠️ NO PLUGINS — no auth, no rate-limiting, no validation.
+    # NO PLUGINS — no auth, no rate-limiting, no validation.
     # This is intentionally unprotected.
+
+  # ===========================================================================
+  # NEW SERVICES — Phase 2 Complex Scenarios
+  # ===========================================================================
+
+  # ── GraphQL Service ──
+  # Protected by depth limiting, introspection blocking, and JWT auth.
+  - name: graphql-service
+    url: http://10.0.10.75:8095
+    protocol: http
+    connect_timeout: 5000
+    read_timeout: 30000
+    write_timeout: 10000
+    routes:
+      - name: graphql-route
+        paths:
+          - /api/v1/graphql
+        methods:
+          - POST
+          - OPTIONS
+        strip_path: false
+    plugins:
+      - name: jwt
+        config:
+          claims_to_verify:
+            - exp
+          key_claim_name: iss
+      - name: request-validator
+        config:
+          allowed_content_types:
+            - application/json
+          body_schema: |
+            {
+              "type": "object",
+              "required": ["query"],
+              "properties": {
+                "query": {"type": "string", "maxLength": 5000},
+                "variables": {"type": "object"},
+                "operationName": {"type": "string", "maxLength": 200}
+              },
+              "additionalProperties": false
+            }
+      - name: request-size-limiting
+        config:
+          allowed_payload_size: 1
+          size_unit: megabytes
+      - name: rate-limiting
+        config:
+          minute: 30
+          policy: local
+          fault_tolerant: true
+
+  # ── Webhook Receiver Service ──
+  # Validates webhook signatures, restricts IPs to known providers.
+  - name: webhook-service
+    url: http://10.0.10.76:8096
+    protocol: http
+    connect_timeout: 5000
+    read_timeout: 15000
+    write_timeout: 10000
+    routes:
+      - name: webhooks-route
+        paths:
+          - /api/v1/webhooks
+        methods:
+          - POST
+        strip_path: false
+    plugins:
+      - name: ip-restriction
+        config:
+          allow:
+            - 3.18.12.63/32      # Stripe webhook IP
+            - 3.130.192.231/32   # Stripe webhook IP
+            - 13.235.14.237/32   # Stripe webhook IP
+            - 203.0.114.0/24     # Partner B2B
+      - name: request-validator
+        config:
+          allowed_content_types:
+            - application/json
+      - name: hmac-auth
+        config:
+          enforce_headers:
+            - X-Webhook-Signature
+          algorithms:
+            - hmac-sha256
+
+  # ── Payment Service ──
+  # PCI-DSS compliant: strict auth, rate limiting, request validation.
+  - name: payment-service
+    url: http://10.0.10.77:8097
+    protocol: http
+    connect_timeout: 5000
+    read_timeout: 30000
+    write_timeout: 10000
+    routes:
+      - name: payments-route
+        paths:
+          - /api/v1/payments
+        methods:
+          - POST
+          - GET
+        strip_path: false
+    plugins:
+      - name: jwt
+        config:
+          claims_to_verify:
+            - exp
+            - sub
+          key_claim_name: iss
+      - name: acl
+        config:
+          allow:
+            - payments-group
+      - name: rate-limiting
+        config:
+          minute: 5
+          policy: local
+          fault_tolerant: true
+      - name: request-validator
+        config:
+          allowed_content_types:
+            - application/json
+          body_schema: |
+            {
+              "type": "object",
+              "required": ["amount", "currency"],
+              "properties": {
+                "amount": {"type": "number", "minimum": 0.01, "maximum": 100000},
+                "currency": {"type": "string", "enum": ["USD", "EUR", "GBP"]},
+                "description": {"type": "string", "maxLength": 500},
+                "idempotency_key": {"type": "string", "maxLength": 64}
+              },
+              "additionalProperties": false
+            }
+      - name: request-size-limiting
+        config:
+          allowed_payload_size: 1
+          size_unit: megabytes
+
+  # ── SSO / OIDC Auth Service ──
+  # Single Sign-On endpoint protected by OpenID Connect.
+  - name: sso-service
+    url: http://10.0.10.63:8084/sso
+    protocol: http
+    routes:
+      - name: sso-route
+        paths:
+          - /api/v1/sso
+        methods:
+          - GET
+          - POST
+        strip_path: false
+    plugins:
+      - name: openid-connect
+        config:
+          issuer: "https://idp.example.com/.well-known/openid-configuration"
+          client_id: "kong-api-gateway"
+          client_secret: "{vault://env/OIDC_CLIENT_SECRET}"
+          scopes:
+            - openid
+            - profile
+            - email
+          auth_methods:
+            - authorization_code
+            - session
+          redirect_uri: "https://api.example.com/api/v1/sso/callback"
+          token_endpoint_auth_method: client_secret_post
+          verify_claims: true
+          verify_nonce: true
+          verify_signature: true
+
+  # ── Profile Service with CORS ──
+  # User profile endpoint with strict CORS policy.
+  - name: profile-service
+    url: http://10.0.10.60:8081/profile
+    protocol: http
+    routes:
+      - name: profile-route
+        paths:
+          - /api/v1/profile
+        methods:
+          - GET
+          - PUT
+          - OPTIONS
+        strip_path: false
+    plugins:
+      - name: jwt
+        config:
+          claims_to_verify:
+            - exp
+            - sub
+      - name: cors
+        config:
+          origins:
+            - "https://app.example.com"
+            - "https://admin.example.com"
+          methods:
+            - GET
+            - PUT
+            - OPTIONS
+          headers:
+            - Authorization
+            - Content-Type
+            - X-Request-ID
+          exposed_headers:
+            - X-Request-ID
+          credentials: true
+          max_age: 86400
+          preflight_continue: false
+
+  # ── gRPC Inventory Service ──
+  # gRPC endpoint with JWT auth and rate limiting.
+  - name: grpc-inventory-service
+    url: grpc://10.0.10.78:50051
+    protocol: grpc
+    routes:
+      - name: grpc-inventory-route
+        paths:
+          - /inventory.InventoryService
+        protocols:
+          - grpc
+          - grpcs
+    plugins:
+      - name: jwt
+        config:
+          claims_to_verify:
+            - exp
+      - name: rate-limiting
+        config:
+          minute: 60
+          policy: local
+
+  # ── Deprecated v0 API (request-termination) ──
+  # Returns 410 Gone for all v0 endpoints — forces clients to upgrade.
+  - name: deprecated-v0-service
+    url: http://10.0.10.60:8081  # never actually reached
+    protocol: http
+    routes:
+      - name: deprecated-v0-route
+        paths:
+          - /api/v0
+        methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        strip_path: false
+    plugins:
+      - name: request-termination
+        config:
+          status_code: 410
+          message: "API v0 has been deprecated and removed. Please migrate to /api/v1/ or /api/v2/."
+          content_type: "application/json"
+
+  # ── Canary Release: User Service v2 (gradual rollout) ──
+  # 10% of traffic routed to v2 for testing new user service version.
+  - name: user-service-v2-canary
+    url: http://10.0.10.80:8081
+    protocol: http
+    connect_timeout: 5000
+    read_timeout: 10000
+    write_timeout: 10000
+    routes:
+      - name: users-v2-canary-route
+        paths:
+          - /api/v2/users
+        methods:
+          - GET
+          - POST
+        strip_path: false
+    plugins:
+      - name: jwt
+        config:
+          claims_to_verify:
+            - exp
+          key_claim_name: iss
+      - name: canary
+        config:
+          percentage: 10
+          upstream_host: 10.0.10.80
+          upstream_port: 8081
+          upstream_fallback: true
+
+  # ── Session Management Service ──
+  # Handles session tokens with strict cookie security.
+  - name: session-service
+    url: http://10.0.10.63:8084/sessions
+    protocol: http
+    routes:
+      - name: session-route
+        paths:
+          - /api/v1/sessions
+        methods:
+          - POST
+          - DELETE
+        strip_path: false
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 15
+          policy: local
+          fault_tolerant: true
+      - name: response-transformer
+        config:
+          add:
+            headers:
+              - "Set-Cookie: session_id={upstream_cookie}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=3600"
+      - name: request-validator
+        config:
+          allowed_content_types:
+            - application/json
+
+  # ── Roles/Permissions Service (privilege escalation target) ──
+  # Requires admin JWT role claim + ACL group for role management.
+  - name: roles-service
+    url: http://10.0.10.60:8081/roles
+    protocol: http
+    routes:
+      - name: roles-route
+        paths:
+          - /api/v1/roles
+        methods:
+          - GET
+          - POST
+          - PUT
+        strip_path: false
+    plugins:
+      - name: jwt
+        config:
+          claims_to_verify:
+            - exp
+            - role
+          key_claim_name: iss
+      - name: acl
+        config:
+          allow:
+            - admin-group
+      - name: ip-restriction
+        config:
+          allow:
+            - 10.0.0.0/16
+      - name: request-validator
+        config:
+          allowed_content_types:
+            - application/json
+          body_schema: |
+            {
+              "type": "object",
+              "properties": {
+                "user_id": {"type": "string"},
+                "role": {"type": "string", "enum": ["viewer", "editor", "admin"]},
+                "permissions": {
+                  "type": "array",
+                  "items": {"type": "string"},
+                  "maxItems": 20
+                }
+              },
+              "additionalProperties": false
+            }
+
+  # ===========================================================================
+  # TRUE POSITIVE #2: Internal Admin Functions — NO ACL PLUGIN
+  # ===========================================================================
+  # A new internal endpoint for bulk user operations was added in a rush.
+  # The developer added JWT auth but FORGOT the ACL plugin.
+  # Any authenticated user (not just admins) can access bulk operations.
+  # This is a Broken Function Level Authorization vulnerability.
+  - name: admin-bulk-operations-service
+    url: http://10.0.10.60:8081/admin/bulk
+    protocol: http
+    routes:
+      - name: admin-bulk-route
+        paths:
+          - /api/v1/admin/bulk
+        methods:
+          - POST
+        strip_path: false
+    plugins:
+      - name: jwt
+        config:
+          claims_to_verify:
+            - exp
+          key_claim_name: iss
+      # NO ACL PLUGIN — any authenticated user can access admin bulk operations.
+      # This is intentionally misconfigured (true positive scenario).
+
+  # ===========================================================================
+  # TRUE POSITIVE #3: New Internal Service — Misconfigured Network + No Auth
+  # ===========================================================================
+  # A new analytics service was deployed to a fresh subnet but the security
+  # group was cloned from the public-facing ALB SG instead of the internal SG.
+  # No auth plugins were applied. This creates a network-level + auth gap.
+  - name: analytics-internal-service
+    url: http://10.0.10.90:8098
+    protocol: http
+    routes:
+      - name: analytics-internal-route
+        paths:
+          - /api/internal/analytics
+        methods:
+          - GET
+          - POST
+        strip_path: false
+    # NO PLUGINS — no auth, no rate-limiting, no validation.
+    # Combined with misconfigured SG (see Terraform analytics_sg),
+    # this is accessible from the internet.

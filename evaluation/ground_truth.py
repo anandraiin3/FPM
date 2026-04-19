@@ -174,4 +174,211 @@ GROUND_TRUTH: list[dict] = [
         "expected_controls": [],
         "reasoning": "The /api/v2/reports route in Kong has NO plugins — no auth, no rate-limiting. No WAF rule covers it. Network SG allows internal traffic. This is an unprotected endpoint returning confidential financial data.",
     },
+
+    # ==========================================================================
+    # Phase 2 — Complex Scenarios Ground Truth
+    # ==========================================================================
+
+    {
+        "template_id": "fp-graphql-depth-attack",
+        "attack_type": "GRAPHQL_DEPTH_ATTACK",
+        "target_endpoint": "/api/v1/graphql",
+        "expected_verdict": "FALSE_POSITIVE",
+        "expected_controls": [
+            "modsec-rule:1016",
+            "kong-plugin:graphql-service:request-validator",
+            "kong-plugin:graphql-service:rate-limiting",
+            "nginx-rate:api_graphql",
+        ],
+        "reasoning": "ModSecurity rule 1016 blocks queries nested >5 levels. Kong request-validator enforces body schema with maxLength. Kong rate-limiting at 30/min. NGINX GraphQL rate limit zone at 30r/m.",
+    },
+    {
+        "template_id": "fp-http-smuggling",
+        "attack_type": "HTTP_REQUEST_SMUGGLING",
+        "target_endpoint": "/api/v1/users",
+        "expected_verdict": "FALSE_POSITIVE",
+        "expected_controls": [
+            "modsec-rule:1020",
+            "modsec-rule:1021",
+            "modsec-crs:REQUEST-921-PROTOCOL-ATTACK.conf",
+        ],
+        "reasoning": "ModSecurity rule 1020 detects CL/TE header conflict. Rule 1021 detects obfuscated Transfer-Encoding. CRS 921 protocol attack rules provide additional coverage. NGINX ignore_invalid_headers also rejects malformed requests.",
+    },
+    {
+        "template_id": "fp-prototype-pollution",
+        "attack_type": "PROTOTYPE_POLLUTION",
+        "target_endpoint": "/api/v1/profile",
+        "expected_verdict": "FALSE_POSITIVE",
+        "expected_controls": [
+            "modsec-rule:1010",
+            "kong-plugin:profile-service:jwt",
+        ],
+        "reasoning": "ModSecurity rule 1010 blocks __proto__ and constructor patterns in request body. Kong JWT validates the request is from an authenticated user.",
+    },
+    {
+        "template_id": "fp-mass-assignment",
+        "attack_type": "MASS_ASSIGNMENT",
+        "target_endpoint": "/api/v1/profile",
+        "expected_verdict": "FALSE_POSITIVE",
+        "expected_controls": [
+            "modsec-rule:1013",
+            "kong-plugin:profile-service:jwt",
+        ],
+        "reasoning": "ModSecurity rule 1013 blocks requests containing is_admin/role/privilege fields in JSON body. Kong JWT ensures authenticated access.",
+    },
+    {
+        "template_id": "fp-open-redirect",
+        "attack_type": "OPEN_REDIRECT",
+        "target_endpoint": "/api/v1/sso",
+        "expected_verdict": "FALSE_POSITIVE",
+        "expected_controls": [
+            "modsec-rule:1011",
+            "kong-plugin:sso-service:openid-connect",
+        ],
+        "reasoning": "ModSecurity rule 1011 blocks redirect parameters pointing to external (non-whitelisted) domains. Kong OIDC plugin validates redirect URIs against registered whitelist.",
+    },
+    {
+        "template_id": "fp-cache-poisoning",
+        "attack_type": "CACHE_POISONING",
+        "target_endpoint": "/api/v1/products",
+        "expected_verdict": "FALSE_POSITIVE",
+        "expected_controls": [
+            "modsec-rule:1030",
+            "kong-plugin:products-service:proxy-cache",
+        ],
+        "reasoning": "ModSecurity rule 1030 blocks unkeyed header injection (X-Forwarded-Host, X-Original-URL). Kong proxy-cache uses vary_headers for strict cache keying.",
+    },
+    {
+        "template_id": "fp-session-hijacking",
+        "attack_type": "SESSION_HIJACKING",
+        "target_endpoint": "/api/v1/sessions",
+        "expected_verdict": "FALSE_POSITIVE",
+        "expected_controls": [
+            "modsec-rule:1025",
+            "modsec-crs:REQUEST-943-APPLICATION-ATTACK-SESSION-FIXATION.conf",
+            "kong-plugin:session-service:response-transformer",
+        ],
+        "reasoning": "ModSecurity rule 1025 detects cookie injection / session fixation. CRS 943 provides session fixation rules. Kong session service response-transformer enforces HttpOnly, Secure, SameSite cookie attributes.",
+    },
+    {
+        "template_id": "fp-privilege-escalation",
+        "attack_type": "PRIVILEGE_ESCALATION",
+        "target_endpoint": "/api/v1/roles",
+        "expected_verdict": "FALSE_POSITIVE",
+        "expected_controls": [
+            "kong-plugin:roles-service:jwt",
+            "kong-plugin:roles-service:acl",
+            "kong-plugin:roles-service:ip-restriction",
+            "kong-plugin:roles-service:request-validator",
+        ],
+        "reasoning": "Kong JWT validates role claim. ACL requires admin-group. IP restriction limits to internal IPs. Request-validator enforces strict enum for role field (viewer, editor, admin only).",
+    },
+    {
+        "template_id": "fp-geo-restricted",
+        "attack_type": "GEO_RESTRICTED_ACCESS",
+        "target_endpoint": "/api/v1/payments",
+        "expected_verdict": "FALSE_POSITIVE",
+        "expected_controls": [
+            "waf:api-waf-acl-v2",
+            "nginx-geo:blocked_countries",
+            "kong-plugin:payment-service:jwt",
+            "kong-plugin:payment-service:rate-limiting",
+        ],
+        "reasoning": "AWS WAF geo_match_statement blocks RU, CN, KP, IR country codes. NGINX GeoIP2 geo-blocking map also blocks these countries. Kong JWT and rate-limiting provide additional layers.",
+    },
+    {
+        "template_id": "fp-data-exfiltration",
+        "attack_type": "DATA_EXFILTRATION",
+        "target_endpoint": "/api/v1/users/export",
+        "expected_verdict": "FALSE_POSITIVE",
+        "expected_controls": [
+            "modsec-rule:1050",
+            "modsec-rule:1051",
+            "modsec:response_body_access",
+            "modsec-crs:RESPONSE-950-DATA-LEAKAGES.conf",
+            "kong-plugin:user-export-service:oauth2",
+        ],
+        "reasoning": "ModSecurity response body inspection rules 1050/1051 detect credit card and SSN patterns in responses. SecResponseBodyAccess is enabled. CRS 950 data leakage rules provide additional coverage. Kong OAuth2 requires proper scope.",
+    },
+    {
+        "template_id": "fp-scanner-detection",
+        "attack_type": "SCANNER_DETECTION",
+        "target_endpoint": "/api/v1/users",
+        "expected_verdict": "FALSE_POSITIVE",
+        "expected_controls": [
+            "modsec-rule:1060",
+            "modsec-crs:REQUEST-913-SCANNER-DETECTION.conf",
+            "nginx-bot:bad_bot_detection",
+            "waf-regex:suspicious-user-agents",
+        ],
+        "reasoning": "ModSecurity rule 1060 detects scanner tools via headers. CRS 913 provides scanner detection. NGINX $is_bad_bot map blocks sqlmap/nikto/etc. AWS WAF regex pattern set blocks suspicious User-Agents.",
+    },
+    {
+        "template_id": "fp-ssti",
+        "attack_type": "SSTI",
+        "target_endpoint": "/api/v1/search",
+        "expected_verdict": "FALSE_POSITIVE",
+        "expected_controls": [
+            "modsec-rule:1012",
+            "kong-plugin:search-service:request-validator",
+        ],
+        "reasoning": "ModSecurity rule 1012 blocks template expressions ({{...}}, ${...}, <%...%>) in input. Kong request-validator enforces maxLength on search query.",
+    },
+    {
+        "template_id": "fp-cors-bypass",
+        "attack_type": "CORS_BYPASS",
+        "target_endpoint": "/api/v1/profile",
+        "expected_verdict": "FALSE_POSITIVE",
+        "expected_controls": [
+            "kong-plugin:profile-service:cors",
+            "nginx-cors:origin_whitelist",
+            "nginx:security_headers",
+        ],
+        "reasoning": "Kong CORS plugin restricts origins to app.example.com and admin.example.com. NGINX CORS origin map enforces the same whitelist. Security headers include X-Frame-Options: DENY.",
+    },
+    {
+        "template_id": "fp-deprecated-api",
+        "attack_type": "DEPRECATED_API_ACCESS",
+        "target_endpoint": "/api/v0/users",
+        "expected_verdict": "FALSE_POSITIVE",
+        "expected_controls": [
+            "kong-plugin:deprecated-v0-service:request-termination",
+            "nginx-loc:/api/v0/",
+        ],
+        "reasoning": "Kong request-termination plugin returns 410 Gone for all /api/v0/ requests. NGINX location block also returns 410 for deprecated v0 API.",
+    },
+    {
+        "template_id": "fp-payment-fraud",
+        "attack_type": "PAYMENT_FRAUD",
+        "target_endpoint": "/api/v1/payments",
+        "expected_verdict": "FALSE_POSITIVE",
+        "expected_controls": [
+            "kong-plugin:payment-service:jwt",
+            "kong-plugin:payment-service:acl",
+            "kong-plugin:payment-service:rate-limiting",
+            "kong-plugin:payment-service:request-validator",
+            "nginx-rate:api_payment",
+            "waf:api-waf-acl-v2",
+        ],
+        "reasoning": "Kong JWT + ACL enforce auth and payments-group. Rate-limiting at 5/min. Request-validator caps amount at 100000 with strict schema. NGINX payment rate limit at 5r/m. WAF geo-block and IP reputation catch flagged IPs.",
+    },
+
+    # Phase 2 — New True Positive Ground Truth
+
+    {
+        "template_id": "tp-broken-function-auth-admin-bulk",
+        "attack_type": "BROKEN_FUNCTION_AUTHORIZATION",
+        "target_endpoint": "/api/v1/admin/bulk",
+        "expected_verdict": "TRUE_POSITIVE",
+        "expected_controls": [],
+        "reasoning": "The /api/v1/admin/bulk route has JWT auth but NO ACL plugin. Any authenticated user (viewer, editor) can perform admin bulk operations. This is a Broken Function Level Authorization vulnerability — JWT alone is insufficient without role-based access control.",
+    },
+    {
+        "template_id": "tp-ssrf-analytics-misconfigured",
+        "attack_type": "NETWORK_MISCONFIGURATION",
+        "target_endpoint": "/api/internal/analytics",
+        "expected_verdict": "TRUE_POSITIVE",
+        "expected_controls": [],
+        "reasoning": "The analytics service has a misconfigured security group (analytics-service-sg-MISCONFIGURED) that allows inbound from 0.0.0.0/0 on port 8098 instead of from Kong SG only. Combined with no auth plugins in Kong, this endpoint is accessible from the internet without authentication, bypassing all security layers.",
+    },
 ]

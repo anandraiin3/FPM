@@ -34,6 +34,94 @@ def parse_nginx(file_path: str) -> list[dict]:
             },
         })
 
+    # ── Connection limiting zones ──
+    for m in re.finditer(
+        r'limit_conn_zone\s+\S+\s+zone=(\w+):(\S+);', text
+    ):
+        zone_name, size = m.group(1), m.group(2)
+        controls.append({
+            "control_id": f"nginx-conn:{zone_name}",
+            "control_type": "conn_limit_zone",
+            "layer": "WAF",
+            "source_file": file_path,
+            "raw_block": m.group(0),
+            "metadata": {
+                "zone_name": zone_name,
+                "size": size,
+            },
+        })
+
+    # ── Geo-blocking map ──
+    geo_match = re.search(
+        r'map\s+\$geoip2_data_country_code\s+\$blocked_country\s*\{([^}]+)\}',
+        text, re.DOTALL
+    )
+    if geo_match:
+        blocked_countries = re.findall(r'^\s*(\w{2})\s+1;', geo_match.group(1), re.MULTILINE)
+        controls.append({
+            "control_id": "nginx-geo:blocked_countries",
+            "control_type": "geo_block",
+            "layer": "WAF",
+            "source_file": file_path,
+            "raw_block": geo_match.group(0),
+            "metadata": {
+                "blocked_countries": blocked_countries,
+            },
+        })
+
+    # ── Bot detection map ──
+    bot_match = re.search(
+        r'map\s+\$http_user_agent\s+\$is_bad_bot\s*\{([^}]+)\}',
+        text, re.DOTALL
+    )
+    if bot_match:
+        bot_patterns = re.findall(r'~\*([^\s]+)', bot_match.group(1))
+        controls.append({
+            "control_id": "nginx-bot:bad_bot_detection",
+            "control_type": "bot_detection",
+            "layer": "WAF",
+            "source_file": file_path,
+            "raw_block": bot_match.group(0),
+            "metadata": {
+                "bot_patterns": bot_patterns,
+            },
+        })
+
+    # ── Security headers ──
+    security_headers = {}
+    for m in re.finditer(r'add_header\s+(\S+)\s+"([^"]+)"\s+always;', text):
+        header_name, header_value = m.group(1), m.group(2)
+        security_headers[header_name] = header_value
+    if security_headers:
+        controls.append({
+            "control_id": "nginx:security_headers",
+            "control_type": "security_headers",
+            "layer": "WAF",
+            "source_file": file_path,
+            "raw_block": "\n".join(
+                f'add_header {k} "{v}" always;' for k, v in security_headers.items()
+            ),
+            "metadata": {"headers": security_headers},
+        })
+
+    # ── CORS origin map ──
+    cors_match = re.search(
+        r'if\s+\(\$http_origin\s+~\*\s+"([^"]+)"\)',
+        text
+    )
+    if cors_match:
+        cors_pattern = cors_match.group(1)
+        controls.append({
+            "control_id": "nginx-cors:origin_whitelist",
+            "control_type": "cors_enforcement",
+            "layer": "WAF",
+            "source_file": file_path,
+            "raw_block": cors_match.group(0),
+            "metadata": {
+                "origin_pattern": cors_pattern,
+            },
+        })
+
     # ── client_max_body_size ──
     m = re.search(r'client_max_body_size\s+(\S+);', text)
     if m:
