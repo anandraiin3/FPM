@@ -30,9 +30,11 @@ class FPMPoller:
         base_url: str | None = None,
         poll_interval: int | None = None,
         max_alerts: int | None = None,
+        reachability_analyzer=None,
     ):
         self._openai = openai_client
         self._retriever = retriever
+        self._reachability_analyzer = reachability_analyzer
         self._base_url = (
             base_url
             or os.getenv("TRACEABLE_BASE_URL", "http://localhost:8000")
@@ -92,7 +94,10 @@ class FPMPoller:
                 logger.info("Processing alert %s (%s → %s)",
                             alert_id, alert.get("attack_type"), alert.get("target_endpoint"))
 
-                verdict = analyse_alert(alert, self._openai, self._retriever)
+                verdict = analyse_alert(
+                    alert, self._openai, self._retriever,
+                    reachability_analyzer=self._reachability_analyzer,
+                )
                 self._post_verdict(alert_id, verdict)
                 self._processed_count += 1
 

@@ -31,11 +31,12 @@ logger = logging.getLogger(__name__)
 _openai_client = None
 _knowledge_store = None
 _retriever = None
+_reachability_analyzer = None
 
 
 def _ensure_initialised():
-    """Lazy-load the OpenAI client, knowledge base, and retriever."""
-    global _openai_client, _knowledge_store, _retriever
+    """Lazy-load the OpenAI client, knowledge base, retriever, and reachability analyzer."""
+    global _openai_client, _knowledge_store, _retriever, _reachability_analyzer
 
     if _openai_client is not None:
         return
@@ -55,7 +56,24 @@ def _ensure_initialised():
     from fpm.retrieval.hybrid_search import HybridRetriever
 
     _retriever = HybridRetriever(_knowledge_store)
-    logger.info("MCP server: FPM components initialised")
+
+    # Build reachability analyzer from Terraform configs
+    from fpm.parsers.terraform_parser import parse_terraform
+    from fpm.analysis.reachability import ReachabilityAnalyzer
+
+    infra_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "infrastructure",
+    )
+    tf_dir = os.path.join(infra_dir, "terraform")
+    tf_controls = []
+    if os.path.isdir(tf_dir):
+        for fname in sorted(os.listdir(tf_dir)):
+            if fname.endswith(".tf"):
+                tf_controls.extend(parse_terraform(os.path.join(tf_dir, fname)))
+    _reachability_analyzer = ReachabilityAnalyzer(tf_controls)
+
+    logger.info("MCP server: FPM components initialised (including reachability analyzer)")
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +130,29 @@ async def list_tools() -> list[Tool]:
                 "required": ["query"],
             },
         ),
+        Tool(
+            name="analyse_reachability",
+            description=(
+                "Perform network reachability analysis on a target endpoint. "
+                "Traces the full network path through security groups from source to target, "
+                "determines whether the endpoint is internet-reachable, which security layers "
+                "(WAF, ALB, Kong Gateway) traffic passes through vs bypasses, and assesses risk level."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "target_endpoint": {
+                        "type": "string",
+                        "description": "The API path to analyse (e.g. /api/v1/graphql, /api/internal/analytics)",
+                    },
+                    "source_ip": {
+                        "type": "string",
+                        "description": "Optional source IP address to check specific reachability from",
+                    },
+                },
+                "required": ["target_endpoint"],
+            },
+        ),
     ]
 
 
@@ -123,6 +164,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return await _handle_analyse_alert(arguments)
     elif name == "search_controls":
         return await _handle_search_controls(arguments)
+    elif name == "analyse_reachability":
+        return await _handle_analyse_reachability(arguments)
     else:
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
@@ -145,7 +188,10 @@ async def _handle_analyse_alert(args: dict) -> list[TextContent]:
     }
 
     try:
-        verdict = analyse_alert(alert, _openai_client, _retriever)
+        verdict = analyse_alert(
+            alert, _openai_client, _retriever,
+            reachability_analyzer=_reachability_analyzer,
+        )
         return [TextContent(type="text", text=json.dumps(verdict, indent=2))]
     except Exception as e:
         logger.error("MCP analyse_alert failed: %s", e, exc_info=True)
@@ -170,6 +216,25 @@ async def _handle_search_controls(args: dict) -> list[TextContent]:
         return [TextContent(type="text", text=json.dumps(output, indent=2))]
     except Exception as e:
         logger.error("MCP search_controls failed: %s", e, exc_info=True)
+        return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
+
+
+async def _handle_analyse_reachability(args: dict) -> list[TextContent]:
+    """Run reachability analysis on a target endpoint."""
+    target_endpoint = args.get("target_endpoint", "")
+    source_ip = args.get("source_ip")
+
+    try:
+        result = _reachability_analyzer.analyse_endpoint(
+            target_endpoint=target_endpoint,
+            source_ip=source_ip,
+        )
+        return [TextContent(
+            type="text",
+            text=_reachability_analyzer.to_json(result),
+        )]
+    except Exception as e:
+        logger.error("MCP analyse_reachability failed: %s", e, exc_info=True)
         return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
 
 

@@ -49,6 +49,42 @@ def parse_modsecurity(file_path: str) -> list[dict]:
             "metadata": {"limit_bytes": int(m.group(1))},
         })
 
+    # ── SecResponseBodyAccess (data leak prevention) ──
+    m = re.search(r'SecResponseBodyAccess\s+(\w+)', text)
+    if m:
+        controls.append({
+            "control_id": "modsec:response_body_access",
+            "control_type": "response_body_access",
+            "layer": "WAF",
+            "source_file": file_path,
+            "raw_block": m.group(0),
+            "metadata": {"enabled": m.group(1)},
+        })
+
+    # ── Paranoia Level ──
+    m = re.search(r'setvar:tx\.blocking_paranoia_level=(\d+)', text)
+    if m:
+        controls.append({
+            "control_id": "modsec:paranoia_level",
+            "control_type": "paranoia_level",
+            "layer": "WAF",
+            "source_file": file_path,
+            "raw_block": f"Paranoia Level: {m.group(1)}",
+            "metadata": {"blocking_paranoia_level": int(m.group(1))},
+        })
+
+    # ── Anomaly Score Thresholds ──
+    m = re.search(r'setvar:tx\.inbound_anomaly_score_threshold=(\d+)', text)
+    if m:
+        controls.append({
+            "control_id": "modsec:anomaly_threshold",
+            "control_type": "anomaly_scoring",
+            "layer": "WAF",
+            "source_file": file_path,
+            "raw_block": f"Inbound anomaly score threshold: {m.group(1)}",
+            "metadata": {"inbound_threshold": int(m.group(1))},
+        })
+
     # ── CRS Rule Includes ──
     for m in re.finditer(r'Include\s+(\S+)', text):
         include_path = m.group(1)
