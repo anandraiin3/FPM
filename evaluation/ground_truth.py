@@ -2,10 +2,25 @@
 Ground truth dataset for RAGAS evaluation.
 
 Maps each alert template to its expected verdict so we can measure
-retrieval quality and answer correctness.
+retrieval quality, answer correctness, and reachability accuracy.
+
+Each entry now includes `expected_reachability` for verifying the
+Network Specialist's reachability analysis.
 """
 
+# Shared reachability expectation for standard /api/v1/* endpoints
+# that go through the ALB → Kong → microservices-sg path.
+_STANDARD_REACHABILITY = {
+    "internet_reachable": True,
+    "risk_level": "LOW",
+    "expected_path_contains": ["alb", "kong", "service"],
+    "expected_bypassed": [],
+}
+
 GROUND_TRUTH: list[dict] = [
+    # ==========================================================================
+    # Phase 1 — Original 20 FP + 1 TP
+    # ==========================================================================
     {
         "template_id": "fp-missing-auth-orders",
         "attack_type": "MISSING_AUTHENTICATION",
@@ -13,6 +28,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["kong-plugin:order-service:jwt"],
         "reasoning": "The /api/v1/orders route has a JWT authentication plugin in Kong Gateway.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-inadequate-auth-config",
@@ -21,6 +37,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["kong-plugin:internal-config-service:ip-restriction", "kong-plugin:internal-config-service:key-auth"],
         "reasoning": "The /api/v1/internal/config route is IP-restricted to 10.0.0.0/16 and requires X-Service-Key auth in Kong.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-sqli-users",
@@ -29,6 +46,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["modsec-rule:1001", "modsec-crs:REQUEST-942-APPLICATION-ATTACK-SQLI.conf", "waf:api-waf-acl"],
         "reasoning": "ModSecurity CRS 942xxx rules and custom rule 1001 block SQL injection. AWS WAF also has SQLi managed rules.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-xss-search",
@@ -37,6 +55,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["modsec-crs:REQUEST-941-APPLICATION-ATTACK-XSS.conf", "kong-plugin:search-service:request-validator"],
         "reasoning": "ModSecurity CRS 941xxx rules block XSS. Kong request-validator limits input on search route.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-rate-abuse-login",
@@ -45,6 +64,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["nginx-rate:api_auth", "kong-plugin:auth-service:rate-limiting"],
         "reasoning": "NGINX auth zone limits to 10 req/min. Kong rate-limiting plugin also limits the auth service.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-credential-stuffing-auth",
@@ -53,6 +73,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["nginx-rate:api_auth", "kong-plugin:auth-service:rate-limiting", "kong-plugin:auth-service:ip-restriction"],
         "reasoning": "Rate limiting blocks rapid attempts. IP restriction denies 203.0.113.0/24 botnet range.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-unauth-access-admin",
@@ -61,6 +82,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["kong-plugin:internal-admin-service:ip-restriction", "kong-plugin:internal-admin-service:jwt", "kong-plugin:internal-admin-service:acl"],
         "reasoning": "Kong restricts to internal IPs, requires JWT with role claim, and ACL limits to admin-group.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-bot-traffic-products",
@@ -69,6 +91,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["kong-plugin:products-service:bot-detection"],
         "reasoning": "Kong bot-detection plugin denies HeadlessChrome, PhantomJS, Scrapy, python-requests User-Agents.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-bola-users",
@@ -77,6 +100,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["kong-plugin:user-by-id-service:jwt"],
         "reasoning": "Kong JWT plugin validates exp and sub claims, ensuring the JWT subject matches the requested user.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-api-key-exposure-data",
@@ -85,6 +109,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["kong-plugin:data-service:request-transformer"],
         "reasoning": "Kong request-transformer strips api_key from query string before forwarding to upstream.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-oversized-payload-upload",
@@ -93,6 +118,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["nginx:client_max_body_size", "modsec-rule:1007", "kong-plugin:upload-service:request-size-limiting"],
         "reasoning": "NGINX limits body to 10MB. ModSecurity rule 1007 rejects >10MB. Kong request-size-limiting caps at 10MB.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-sqli-double-search",
@@ -101,6 +127,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["modsec-rule:1001", "modsec-crs:REQUEST-942-APPLICATION-ATTACK-SQLI.conf", "kong-plugin:search-service:request-validator"],
         "reasoning": "ModSecurity CRS + custom rule 1001 detect UNION SELECT. Kong request-validator limits search input.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-path-traversal-files",
@@ -109,6 +136,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["modsec-rule:1003", "modsec-crs:REQUEST-930-APPLICATION-ATTACK-LFI.conf"],
         "reasoning": "ModSecurity CRS 930xxx rules and custom rule 1003 block ../ path traversal patterns.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-command-injection-exec",
@@ -117,6 +145,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["modsec-rule:1004", "modsec-crs:REQUEST-932-APPLICATION-ATTACK-RCE.conf", "kong-plugin:exec-service:ip-restriction"],
         "reasoning": "ModSecurity CRS 932xxx and custom rule 1004 block command injection. Kong restricts exec to internal IPs.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-ssrf-fetch",
@@ -125,6 +154,12 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["sg:fetch-service-sg", "kong-plugin:fetch-service:ip-restriction"],
         "reasoning": "Fetch-service SG allows egress only to partner CIDR 203.0.114.0/24, blocking internal/metadata IPs. Kong restricts to internal IPs.",
+        "expected_reachability": {
+            "internet_reachable": True,
+            "risk_level": "LOW",
+            "expected_path_contains": ["alb", "kong", "service"],
+            "expected_bypassed": [],
+        },
     },
     {
         "template_id": "fp-brute-force-reset",
@@ -133,6 +168,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["nginx-rate:api_reset", "kong-plugin:reset-password-service:rate-limiting"],
         "reasoning": "NGINX reset zone limits to 3 req/min. Kong rate-limiting limits to 3/min on reset-password route.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-sensitive-data-export",
@@ -141,6 +177,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["kong-plugin:user-export-service:oauth2", "kong-plugin:user-export-service:ip-restriction"],
         "reasoning": "Kong OAuth2 requires users:read:export scope. IP restriction denies 203.0.113.0/24.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-xml-injection-xml",
@@ -149,6 +186,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["modsec-rule:1006", "modsec-crs:REQUEST-941-APPLICATION-ATTACK-XSS.conf"],
         "reasoning": "ModSecurity custom rule 1006 blocks XXE DOCTYPE/ENTITY patterns. CRS 941xxx also covers XML attacks.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-verb-tampering-users",
@@ -157,6 +195,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["kong-svc:user-service"],
         "reasoning": "Kong users-route only allows GET and POST methods. DELETE is not in the allowed methods list and is rejected.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-dos-regex-validate",
@@ -165,6 +204,7 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "FALSE_POSITIVE",
         "expected_controls": ["nginx-rate:api_validate", "kong-plugin:validate-service:rate-limiting"],
         "reasoning": "NGINX validate zone limits to 20 req/min. Kong rate-limiting limits to 20/min. Both prevent ReDoS abuse.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "tp-missing-auth-v2-reports",
@@ -173,6 +213,14 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "TRUE_POSITIVE",
         "expected_controls": [],
         "reasoning": "The /api/v2/reports route in Kong has NO plugins — no auth, no rate-limiting. No WAF rule covers it. Network SG allows internal traffic. This is an unprotected endpoint returning confidential financial data.",
+        "expected_reachability": {
+            "internet_reachable": True,
+            "risk_level": "LOW",
+            "expected_path_contains": ["alb", "kong", "service"],
+            "expected_bypassed": [],
+            # NOTE: Reachability is standard (LOW risk) — the vulnerability
+            # is at the Kong plugin layer (no auth), not the network layer.
+        },
     },
 
     # ==========================================================================
@@ -191,6 +239,12 @@ GROUND_TRUTH: list[dict] = [
             "nginx-rate:api_graphql",
         ],
         "reasoning": "ModSecurity rule 1016 blocks queries nested >5 levels. Kong request-validator enforces body schema with maxLength. Kong rate-limiting at 30/min. NGINX GraphQL rate limit zone at 30r/m.",
+        "expected_reachability": {
+            "internet_reachable": True,
+            "risk_level": "LOW",
+            "expected_path_contains": ["alb", "kong", "service"],
+            "expected_bypassed": [],
+        },
     },
     {
         "template_id": "fp-http-smuggling",
@@ -203,6 +257,7 @@ GROUND_TRUTH: list[dict] = [
             "modsec-crs:REQUEST-921-PROTOCOL-ATTACK.conf",
         ],
         "reasoning": "ModSecurity rule 1020 detects CL/TE header conflict. Rule 1021 detects obfuscated Transfer-Encoding. CRS 921 protocol attack rules provide additional coverage. NGINX ignore_invalid_headers also rejects malformed requests.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-prototype-pollution",
@@ -214,6 +269,7 @@ GROUND_TRUTH: list[dict] = [
             "kong-plugin:profile-service:jwt",
         ],
         "reasoning": "ModSecurity rule 1010 blocks __proto__ and constructor patterns in request body. Kong JWT validates the request is from an authenticated user.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-mass-assignment",
@@ -225,6 +281,7 @@ GROUND_TRUTH: list[dict] = [
             "kong-plugin:profile-service:jwt",
         ],
         "reasoning": "ModSecurity rule 1013 blocks requests containing is_admin/role/privilege fields in JSON body. Kong JWT ensures authenticated access.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-open-redirect",
@@ -236,6 +293,7 @@ GROUND_TRUTH: list[dict] = [
             "kong-plugin:sso-service:openid-connect",
         ],
         "reasoning": "ModSecurity rule 1011 blocks redirect parameters pointing to external (non-whitelisted) domains. Kong OIDC plugin validates redirect URIs against registered whitelist.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-cache-poisoning",
@@ -247,6 +305,7 @@ GROUND_TRUTH: list[dict] = [
             "kong-plugin:products-service:proxy-cache",
         ],
         "reasoning": "ModSecurity rule 1030 blocks unkeyed header injection (X-Forwarded-Host, X-Original-URL). Kong proxy-cache uses vary_headers for strict cache keying.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-session-hijacking",
@@ -259,6 +318,7 @@ GROUND_TRUTH: list[dict] = [
             "kong-plugin:session-service:response-transformer",
         ],
         "reasoning": "ModSecurity rule 1025 detects cookie injection / session fixation. CRS 943 provides session fixation rules. Kong session service response-transformer enforces HttpOnly, Secure, SameSite cookie attributes.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-privilege-escalation",
@@ -272,6 +332,7 @@ GROUND_TRUTH: list[dict] = [
             "kong-plugin:roles-service:request-validator",
         ],
         "reasoning": "Kong JWT validates role claim. ACL requires admin-group. IP restriction limits to internal IPs. Request-validator enforces strict enum for role field (viewer, editor, admin only).",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-geo-restricted",
@@ -285,6 +346,12 @@ GROUND_TRUTH: list[dict] = [
             "kong-plugin:payment-service:rate-limiting",
         ],
         "reasoning": "AWS WAF geo_match_statement blocks RU, CN, KP, IR country codes. NGINX GeoIP2 geo-blocking map also blocks these countries. Kong JWT and rate-limiting provide additional layers.",
+        "expected_reachability": {
+            "internet_reachable": True,
+            "risk_level": "LOW",
+            "expected_path_contains": ["alb", "kong", "service"],
+            "expected_bypassed": [],
+        },
     },
     {
         "template_id": "fp-data-exfiltration",
@@ -299,6 +366,7 @@ GROUND_TRUTH: list[dict] = [
             "kong-plugin:user-export-service:oauth2",
         ],
         "reasoning": "ModSecurity response body inspection rules 1050/1051 detect credit card and SSN patterns in responses. SecResponseBodyAccess is enabled. CRS 950 data leakage rules provide additional coverage. Kong OAuth2 requires proper scope.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-scanner-detection",
@@ -312,6 +380,7 @@ GROUND_TRUTH: list[dict] = [
             "waf-regex:suspicious-user-agents",
         ],
         "reasoning": "ModSecurity rule 1060 detects scanner tools via headers. CRS 913 provides scanner detection. NGINX $is_bad_bot map blocks sqlmap/nikto/etc. AWS WAF regex pattern set blocks suspicious User-Agents.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-ssti",
@@ -323,6 +392,7 @@ GROUND_TRUTH: list[dict] = [
             "kong-plugin:search-service:request-validator",
         ],
         "reasoning": "ModSecurity rule 1012 blocks template expressions ({{...}}, ${...}, <%...%>) in input. Kong request-validator enforces maxLength on search query.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-cors-bypass",
@@ -335,6 +405,7 @@ GROUND_TRUTH: list[dict] = [
             "nginx:security_headers",
         ],
         "reasoning": "Kong CORS plugin restricts origins to app.example.com and admin.example.com. NGINX CORS origin map enforces the same whitelist. Security headers include X-Frame-Options: DENY.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-deprecated-api",
@@ -346,6 +417,7 @@ GROUND_TRUTH: list[dict] = [
             "nginx-loc:/api/v0/",
         ],
         "reasoning": "Kong request-termination plugin returns 410 Gone for all /api/v0/ requests. NGINX location block also returns 410 for deprecated v0 API.",
+        "expected_reachability": _STANDARD_REACHABILITY,
     },
     {
         "template_id": "fp-payment-fraud",
@@ -361,9 +433,17 @@ GROUND_TRUTH: list[dict] = [
             "waf:api-waf-acl-v2",
         ],
         "reasoning": "Kong JWT + ACL enforce auth and payments-group. Rate-limiting at 5/min. Request-validator caps amount at 100000 with strict schema. NGINX payment rate limit at 5r/m. WAF geo-block and IP reputation catch flagged IPs.",
+        "expected_reachability": {
+            "internet_reachable": True,
+            "risk_level": "LOW",
+            "expected_path_contains": ["alb", "kong", "service"],
+            "expected_bypassed": [],
+        },
     },
 
-    # Phase 2 — New True Positive Ground Truth
+    # ==========================================================================
+    # Phase 2 — True Positive Ground Truth
+    # ==========================================================================
 
     {
         "template_id": "tp-broken-function-auth-admin-bulk",
@@ -372,6 +452,14 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "TRUE_POSITIVE",
         "expected_controls": [],
         "reasoning": "The /api/v1/admin/bulk route has JWT auth but NO ACL plugin. Any authenticated user (viewer, editor) can perform admin bulk operations. This is a Broken Function Level Authorization vulnerability — JWT alone is insufficient without role-based access control.",
+        "expected_reachability": {
+            "internet_reachable": True,
+            "risk_level": "LOW",
+            "expected_path_contains": ["alb", "kong", "service"],
+            "expected_bypassed": [],
+            # NOTE: Standard path — the gap is at the Kong plugin layer (missing ACL),
+            # not the network layer. Reachability is normal.
+        },
     },
     {
         "template_id": "tp-ssrf-analytics-misconfigured",
@@ -380,5 +468,13 @@ GROUND_TRUTH: list[dict] = [
         "expected_verdict": "TRUE_POSITIVE",
         "expected_controls": [],
         "reasoning": "The analytics service has a misconfigured security group (analytics-service-sg-MISCONFIGURED) that allows inbound from 0.0.0.0/0 on port 8098 instead of from Kong SG only. Combined with no auth plugins in Kong, this endpoint is accessible from the internet without authentication, bypassing all security layers.",
+        "expected_reachability": {
+            "internet_reachable": True,
+            "risk_level": "CRITICAL",
+            "expected_path_contains": ["service"],
+            "expected_bypassed": ["waf", "alb", "kong"],
+            # CRITICAL: Direct internet access bypassing all security layers.
+            # This is the key reachability test case.
+        },
     },
 ]
