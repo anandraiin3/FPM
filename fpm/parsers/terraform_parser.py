@@ -45,6 +45,16 @@ def parse_terraform(file_path: str) -> list[dict]:
             controls.append(_parse_waf_acl(rname, block, file_path))
         elif rtype == "aws_wafv2_web_acl_association":
             controls.append(_parse_waf_association(rname, block, file_path))
+        elif rtype == "aws_wafv2_ip_set":
+            controls.append(_parse_waf_ip_set(rname, block, file_path))
+        elif rtype == "aws_wafv2_regex_pattern_set":
+            controls.append(_parse_waf_regex_set(rname, block, file_path))
+        elif rtype == "aws_shield_protection":
+            controls.append(_parse_shield(rname, block, file_path))
+        elif rtype == "aws_ec2_transit_gateway":
+            controls.append(_parse_transit_gateway(rname, block, file_path))
+        elif rtype == "aws_vpc_endpoint":
+            controls.append(_parse_vpc_endpoint(rname, block, file_path))
 
     return controls
 
@@ -152,6 +162,15 @@ def _parse_waf_acl(rname: str, block: str, file_path: str) -> dict:
     name = _extract_field(block, "name")
     # Extract managed rule group names
     groups = re.findall(r'name\s*=\s*"(AWSManagedRules\w+)"', block)
+    # Extract custom rule names
+    custom_rules = re.findall(r'rule\s*\{\s*name\s*=\s*"([^"]+)"', block)
+    # Extract rate-based rules
+    rate_limits = re.findall(r'limit\s*=\s*(\d+)', block)
+    # Extract geo-match country codes
+    geo_countries = re.findall(r'country_codes\s*=\s*\[([^\]]*)\]', block)
+    geo_list = []
+    for gc in geo_countries:
+        geo_list.extend(re.findall(r'"([^"]+)"', gc))
     return {
         "control_id": f"waf:{name}",
         "control_type": "waf_acl",
@@ -162,6 +181,9 @@ def _parse_waf_acl(rname: str, block: str, file_path: str) -> dict:
             "name": name,
             "resource_name": rname,
             "managed_rule_groups": groups,
+            "custom_rule_names": custom_rules,
+            "rate_limits": rate_limits,
+            "geo_blocked_countries": geo_list,
         },
     }
 
@@ -174,4 +196,85 @@ def _parse_waf_association(rname: str, block: str, file_path: str) -> dict:
         "source_file": file_path,
         "raw_block": block,
         "metadata": {"resource_name": rname},
+    }
+
+
+def _parse_waf_ip_set(rname: str, block: str, file_path: str) -> dict:
+    name = _extract_field(block, "name")
+    addresses = _extract_list(block, "addresses")
+    return {
+        "control_id": f"waf-ipset:{name}",
+        "control_type": "waf_ip_set",
+        "layer": "Network",
+        "source_file": file_path,
+        "raw_block": block,
+        "metadata": {
+            "name": name,
+            "resource_name": rname,
+            "blocked_cidrs": addresses,
+        },
+    }
+
+
+def _parse_waf_regex_set(rname: str, block: str, file_path: str) -> dict:
+    name = _extract_field(block, "name")
+    patterns = re.findall(r'regex_string\s*=\s*"([^"]+)"', block)
+    return {
+        "control_id": f"waf-regex:{name}",
+        "control_type": "waf_regex_pattern_set",
+        "layer": "Network",
+        "source_file": file_path,
+        "raw_block": block,
+        "metadata": {
+            "name": name,
+            "resource_name": rname,
+            "patterns": patterns,
+        },
+    }
+
+
+def _parse_shield(rname: str, block: str, file_path: str) -> dict:
+    name = _extract_field(block, "name")
+    return {
+        "control_id": f"shield:{name}",
+        "control_type": "shield_protection",
+        "layer": "Network",
+        "source_file": file_path,
+        "raw_block": block,
+        "metadata": {
+            "name": name,
+            "resource_name": rname,
+        },
+    }
+
+
+def _parse_transit_gateway(rname: str, block: str, file_path: str) -> dict:
+    desc = _extract_field(block, "description")
+    return {
+        "control_id": f"tgw:{rname}",
+        "control_type": "transit_gateway",
+        "layer": "Network",
+        "source_file": file_path,
+        "raw_block": block,
+        "metadata": {
+            "resource_name": rname,
+            "description": desc,
+        },
+    }
+
+
+def _parse_vpc_endpoint(rname: str, block: str, file_path: str) -> dict:
+    service_name = _extract_field(block, "service_name")
+    endpoint_type = _extract_field(block, "vpc_endpoint_type")
+    return {
+        "control_id": f"vpce:{rname}",
+        "control_type": "vpc_endpoint",
+        "layer": "Network",
+        "source_file": file_path,
+        "raw_block": block,
+        "metadata": {
+            "resource_name": rname,
+            "service_name": service_name,
+            "endpoint_type": endpoint_type,
+        },
     }

@@ -30,10 +30,11 @@ logger = logging.getLogger(__name__)
 class OrchestratorContext:
     """Runtime context for the orchestrator run."""
 
-    def __init__(self, openai_client, retriever, alert: dict):
+    def __init__(self, openai_client, retriever, alert: dict, reachability_analyzer=None):
         self.openai_client = openai_client
         self.retriever = retriever
         self.alert = alert
+        self.reachability_analyzer = reachability_analyzer
         self.rewritten_query: str = ""
         self.specialist_results: dict[str, str] = {}
         self.total_tokens: int = 0
@@ -109,22 +110,30 @@ async def analyse_network_layer(
     alert_summary: str,
 ) -> str:
     """Delegate analysis to the Network Specialist (Terraform SGs, NACLs, WAF ACLs).
-    The specialist will search the knowledge base and return findings.
+    The specialist will search the knowledge base, perform REACHABILITY ANALYSIS
+    to trace the network path from source to target, and return findings including
+    whether the endpoint is internet-reachable and which security layers are bypassed.
 
     Args:
         alert_summary: Brief summary of the alert for the specialist
     """
     oc = ctx.context
-    specialist_ctx = SpecialistContext(oc.retriever, oc.rewritten_query, oc.alert)
+    specialist_ctx = SpecialistContext(
+        oc.retriever, oc.rewritten_query, oc.alert,
+        reachability_analyzer=oc.reachability_analyzer,
+    )
 
     prompt = (
-        f"Analyse this alert for Network-layer mitigations.\n\n"
+        f"Analyse this alert for Network-layer mitigations and REACHABILITY.\n\n"
         f"Alert: {alert_summary}\n"
         f"Rewritten search query: {oc.rewritten_query}\n\n"
         f"Attack type: {oc.alert.get('attack_type', '')}\n"
         f"Target endpoint: {oc.alert.get('target_endpoint', '')}\n"
         f"HTTP method: {oc.alert.get('http_method', '')}\n"
-        f"Source IP: {oc.alert.get('source_ip', '')}"
+        f"Source IP: {oc.alert.get('source_ip', '')}\n\n"
+        f"IMPORTANT: You MUST call analyse_reachability with the target endpoint "
+        f"and source IP to trace the full network path and determine which security "
+        f"layers the traffic passes through vs. bypasses."
     )
 
     with custom_span("network_specialist"):
@@ -145,17 +154,27 @@ ORCHESTRATOR_AGENT = Agent(
 You have three specialist tools at your disposal — one for each infrastructure layer:
 1. analyse_waf_layer — checks NGINX rate limits and ModSecurity rules
 2. analyse_gateway_layer — checks Kong Gateway plugins and route configurations
-3. analyse_network_layer — checks Terraform security groups, NACLs, and WAF associations
+3. analyse_network_layer — checks Terraform security groups, NACLs, WAF associations AND performs REACHABILITY ANALYSIS
+
+The Network Specialist now performs reachability analysis that traces the full network path from the source IP to the target endpoint. This tells you:
+- Whether the endpoint is reachable from the internet
+- Which security layers (WAF, ALB, Kong Gateway) traffic passes through
+- Which layers are BYPASSED (critical for true positive detection)
+- The risk level based on network exposure
 
 PROCESS:
 1. Call ALL THREE specialist tools with a summary of the alert.
-2. Synthesise findings from all three layers.
-3. Return your final verdict as a JSON object.
+2. Pay special attention to the Network Specialist's REACHABILITY findings:
+   - If layers are bypassed, controls in those layers DON'T APPLY even if they exist
+   - If the endpoint bypasses Kong Gateway, gateway-layer plugins are IRRELEVANT
+   - If the endpoint bypasses the ALB, WAF rules are IRRELEVANT
+3. Synthesise findings from all three layers, weighted by actual reachability.
+4. Return your final verdict as a JSON object.
 
 VERDICT RULES:
-- FALSE_POSITIVE: At least one compensating control fully mitigates the threat. Confidence should be high (0.8-1.0).
-- TRUE_POSITIVE: No compensating control exists across any layer. The threat is genuine. Confidence should be high (0.8-1.0).
-- PARTIAL_RISK: Controls exist but don't fully cover the threat. Include coverage_gaps. Confidence 0.5-0.8.
+- FALSE_POSITIVE: At least one compensating control in the ACTUAL traffic path fully mitigates the threat. Confidence 0.8-1.0.
+- TRUE_POSITIVE: No compensating control exists in the actual traffic path. The threat is genuine. Confidence 0.8-1.0. This includes cases where controls exist but are BYPASSED due to network misconfiguration.
+- PARTIAL_RISK: Controls exist in the traffic path but don't fully cover the threat. Include coverage_gaps. Confidence 0.5-0.8.
 - NEEDS_HUMAN_REVIEW: Insufficient evidence. Confidence below 0.5.
 
 Your final response MUST be a valid JSON object with exactly these fields:
@@ -165,7 +184,13 @@ Your final response MUST be a valid JSON object with exactly these fields:
   "reasoning": "explanation",
   "controls_found": ["list", "of", "control", "IDs"],
   "coverage_gaps": ["list", "of", "gaps"],
-  "recommended_action": "what to do next"
+  "recommended_action": "what to do next",
+  "reachability": {
+    "internet_reachable": true/false,
+    "risk_level": "LOW/MEDIUM/HIGH/CRITICAL",
+    "traffic_path": "Internet -> ALB SG -> Kong SG -> Service SG",
+    "layers_bypassed": ["list of bypassed layers"]
+  }
 }
 
 IMPORTANT: Always call all three specialist tools before making your verdict. Do not skip any layer.""",
@@ -181,9 +206,16 @@ def analyse_alert(
     alert: dict,
     openai_client,
     retriever,
+    reachability_analyzer=None,
 ) -> dict:
     """
     Analyse a single alert through the multi-agent system.
+
+    Args:
+        alert: The alert dict from the mock server.
+        openai_client: OpenAI client instance.
+        retriever: HybridRetriever for knowledge base search.
+        reachability_analyzer: Optional ReachabilityAnalyzer for network path tracing.
 
     Returns a verdict dict ready to POST to the mock server.
     """
@@ -191,7 +223,7 @@ def analyse_alert(
     start_time = time.time()
 
     # Run the async orchestrator in a new event loop to avoid conflicts
-    result_data = _run_orchestrator(alert, openai_client, retriever)
+    result_data = _run_orchestrator(alert, openai_client, retriever, reachability_analyzer)
 
     elapsed_ms = int((time.time() - start_time) * 1000)
 
@@ -204,7 +236,7 @@ def analyse_alert(
     return result_data
 
 
-def _run_orchestrator(alert: dict, openai_client, retriever) -> dict:
+def _run_orchestrator(alert: dict, openai_client, retriever, reachability_analyzer=None) -> dict:
     """Run the orchestrator in a fresh event loop."""
     alert_id = alert.get("alert_id", "unknown")
 
@@ -215,7 +247,10 @@ def _run_orchestrator(alert: dict, openai_client, retriever) -> dict:
                 rewritten_query = rewrite_query(alert, openai_client)
 
             # Step 2: Run orchestrator
-            oc = OrchestratorContext(openai_client, retriever, alert)
+            oc = OrchestratorContext(
+                openai_client, retriever, alert,
+                reachability_analyzer=reachability_analyzer,
+            )
             oc.rewritten_query = rewritten_query
 
             alert_prompt = (
