@@ -1,0 +1,168 @@
+Based on my exploration of the FPM codebase, I'll create a comprehensive skills/configuration file that describes what Devin can do with this repository.
+Here's a comprehensive skills/configuration file for Devin to work with the FPM codebase:
+
+```yaml
+# Devin Skills Configuration for FPM (False Positive Minimizer)
+# This file describes capabilities and tasks Devin can perform with this codebase
+
+project:
+  name: "False Positive Minimizer (FPM)"
+  description: "AI-driven security system that validates security alerts against infrastructure configurations to reduce false positives"
+  architecture: "Two-application system: Mock Server (FastAPI) + FPM Engine (Multi-agent AI)"
+  
+capabilities:
+  understanding:
+    - "Explain the two-application architecture (Mock Server + FPM Engine)"
+    - "Describe the multi-agent system (Orchestrator + WAF/Gateway/Network specialists)"
+    - "Explain the hybrid retrieval pipeline (BM25 + dense search + cross-encoder reranking)"
+    - "Understand the knowledge base construction process (parsing → chunking → enrichment → embedding)"
+    - "Describe the alert analysis flow from ingestion to verdict"
+  
+  running_testing:
+    - "Start the complete system using ./start.sh"
+    - "Run applications individually: python -m mock_server.run and python -m fpm.run"
+    - "Configure environment variables via .env file"
+    - "Access the monitoring dashboard at http://localhost:8000"
+    - "Run the evaluation suite: python -m evaluation.evaluate"
+    - "Test the MCP server: python -m fpm.mcp_server.server"
+    - "Run FPM with max-alerts limit: python -m fpm.run --max-alerts N"
+  
+  component_modification:
+    parsers:
+      - "Modify existing parsers in fpm/parsers/ (terraform_parser.py, nginx_parser.py, modsecurity_parser.py, kong_parser.py)"
+      - "Add new infrastructure config parsers for other formats"
+      - "Update parsing logic to handle new configuration patterns"
+      - "Test parser output with sample infrastructure files"
+    
+    knowledge_base:
+      - "Modify chunking strategies in fpm/knowledge/chunking.py"
+      - "Adjust enrichment prompts in fpm/knowledge/enrichment.py"
+      - "Change embedding models or parameters in fpm/knowledge/embeddings.py"
+      - "Modify knowledge base builder logic in fpm/knowledge/builder.py"
+      - "Rebuild knowledge base after infrastructure changes"
+    
+    retrieval:
+      - "Adjust hybrid search parameters in fpm/retrieval/hybrid_search.py"
+      - "Modify query rewriting logic in fpm/retrieval/query_rewriter.py"
+      - "Change BM25 weights or dense search thresholds"
+      - "Experiment with different reranking models"
+      - "Add new retrieval strategies or collections"
+    
+    agents:
+      - "Modify orchestrator agent instructions and tools in fpm/agents/orchestrator.py"
+      - "Update specialist agent prompts in fpm/agents/specialists.py"
+      - "Add new specialist agents for additional infrastructure layers"
+      - "Modify agent tool functions and their behavior"
+      - "Adjust verdict logic and confidence thresholds"
+  
+  extension:
+    new_specialists:
+      - "Create new specialist agent following the pattern in fpm/agents/specialists.py"
+      - "Add corresponding search tool for the new layer"
+      - "Register new specialist in orchestrator tools"
+      - "Update orchestrator instructions to include new layer"
+      - "Add infrastructure parser for the new layer type"
+    
+    new_parsers:
+      - "Create new parser module in fpm/parsers/"
+      - "Follow existing parser pattern: parse file → return list of control dicts"
+      - "Register parser in fpm/knowledge/builder.py"
+      - "Add sample infrastructure files to infrastructure/ directory"
+      - "Test parser with various config formats"
+    
+    new_retrieval_strategies:
+      - "Add new chunking strategies in fpm/knowledge/chunking.py"
+      - "Create new ChromaDB collections in fpm/knowledge/embeddings.py"
+      - "Implement new retrieval logic in fpm/retrieval/hybrid_search.py"
+      - "Update knowledge base builder to store new chunk types"
+    
+    mcp_integration:
+      - "Add new MCP tools in fpm/mcp_server/server.py"
+      - "Modify existing tool schemas or descriptions"
+      - "Implement new tool handlers"
+      - "Test MCP server with external clients"
+  
+  infrastructure_work:
+    - "Modify Terraform configurations in infrastructure/terraform/"
+    - "Update NGINX/ModSecurity configs in infrastructure/nginx/"
+    - "Adjust Kong Gateway configurations in infrastructure/kong/"
+    - "Add new infrastructure files for testing"
+    - "Validate infrastructure configurations against security best practices"
+  
+  evaluation_testing:
+    - "Modify ground truth dataset in evaluation/ground_truth.py"
+    - "Adjust evaluation metrics in evaluation/evaluate.py"
+    - "Add new test cases to the evaluation suite"
+    - "Run RAGAS metrics evaluation (if ragas is installed)"
+    - "Analyze evaluation results and identify improvement areas"
+  
+  debugging_troubleshooting:
+    - "Debug knowledge base construction issues"
+    - "Troubleshoot retrieval quality problems"
+    - "Analyze agent behavior and verdict accuracy"
+    - "Review OpenAI tracing logs for LLM calls"
+    - "Debug MCP server connectivity issues"
+    - "Fix parsing errors for infrastructure configs"
+    - "Resolve ChromaDB persistence issues"
+
+common_workflows:
+  adding_new_infrastructure_type:
+    steps:
+      - "Create parser in fpm/parsers/"
+      - "Add sample configs to infrastructure/"
+      - "Register parser in fpm/knowledge/builder.py"
+      - "Rebuild knowledge base"
+      - "Test retrieval with new controls"
+      - "Add specialist agent if needed"
+  
+  improving_retrieval_accuracy:
+    steps:
+      - "Run evaluation suite to establish baseline"
+      - "Analyze retrieval results for failing cases"
+      - "Adjust chunking strategy or enrichment prompts"
+      - "Tune hybrid search parameters"
+      - "Rebuild knowledge base"
+      - "Re-run evaluation to measure improvement"
+  
+  adding_new_alert_template:
+    steps:
+      - "Add template to mock_server alert templates"
+      - "Update ground truth in evaluation/ground_truth.py"
+      - "Ensure infrastructure has appropriate controls"
+      - "Test analysis with new alert"
+      - "Verify verdict matches expected outcome"
+
+key_files:
+  entry_points:
+    - "fpm/run.py - FPM engine entry point"
+    - "mock_server/run.py - Mock server entry point"
+    - "fpm/mcp_server/server.py - MCP server entry point"
+  
+  core_logic:
+    - "fpm/agents/orchestrator.py - Main orchestrator agent"
+    - "fpm/agents/specialists.py - Specialist agents"
+    - "fpm/knowledge/builder.py - Knowledge base construction"
+    - "fpm/retrieval/hybrid_search.py - Retrieval pipeline"
+    - "fpm/polling.py - Alert polling logic"
+  
+  configuration:
+    - ".env.example - Environment variables template"
+    - "requirements.txt - Python dependencies"
+    - "start.sh / stop.sh - Startup/shutdown scripts"
+
+dependencies:
+  required:
+    - "Python 3.8+"
+    - "OPENAI_API_KEY environment variable"
+  optional:
+    - "ragas - For advanced evaluation metrics"
+    - "ChromaDB persistence directory (./chroma_data by default)"
+
+important_notes:
+  - "The system uses gpt-4o-mini for all LLM calls"
+  - "ChromaDB stores embeddings locally and persists across runs"
+  - "Knowledge base is idempotent - skips rebuild if already populated"
+  - "All agent calls are traced via OpenAI tracing UI"
+  - "The mock server generates 21 pre-defined alerts (20 FP, 1 TP)"
+  - "MCP server allows external tools like Claude Desktop to trigger analysis"
+```
