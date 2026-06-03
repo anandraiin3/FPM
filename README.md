@@ -10,6 +10,28 @@ Simulates an API security platform: generates security alerts on a schedule, sto
 ### Application 2 — False Positive Minimizer
 The AI engine: polls for new alerts, searches a locally-built knowledge base of infrastructure configs (Terraform, NGINX/ModSecurity, Kong Gateway), uses a multi-agent system (OpenAI Agents SDK) to analyse whether existing controls already mitigate each threat, and posts structured verdicts back.
 
+## Prerequisites
+
+Run all commands from this directory (`FPM/`). Python modules expect the project root on `sys.path`.
+
+## Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [AGENTS.md](AGENTS.md) | AI/developer onboarding: entry points, invariants, pitfalls, change guide |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Data flow, REST API, module map, synced artifacts |
+
+## Entry points
+
+| Command | Purpose |
+|---------|---------|
+| `./start.sh` | Start mock server + FPM (background) |
+| `./stop.sh` | Stop background processes |
+| `python -m mock_server.run` | App 1 only (port 8000) |
+| `python -m fpm.run` | App 2 only (KB build + polling) |
+| `python -m evaluation.evaluate` | Offline eval (optional) |
+| `python -m fpm.mcp_server.server` | MCP stdio server (optional) |
+
 ## Quick Start
 
 ```bash
@@ -55,9 +77,43 @@ python -m fpm.run
 
 ## Alert Templates
 
-21 pre-defined templates:
-- **20 false positives** — each has at least one compensating control that fully mitigates the threat
-- **1 true positive** — `/api/v2/reports/{id}` has no auth plugin, no WAF rule, returns confidential financial data
+21 pre-defined templates in `mock_server/alert_templates.py`:
+- **20 false positives** (`fp-*`) — each has at least one compensating control that fully mitigates the threat
+- **1 true positive** (`tp-missing-auth-v2-reports`) — `/api/v2/reports/{id}` has no auth plugin, no WAF rule, returns confidential financial data
+
+Expected verdicts and control IDs for evaluation are in `evaluation/ground_truth.py` (keyed by `template_id`).
+
+## Mock server API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/alerts` | Pending alerts (FPM poller) |
+| `POST` | `/alerts/{alert_id}/verdict` | Post analysis result |
+| `GET` | `/alerts/all` | All alerts |
+| `GET` | `/alerts/stats` | Statistics |
+| `GET` | `/health` | Health check |
+| `GET` | `/` | Dashboard |
+
+Full contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#rest-api-contract-mock-server).
+
+## Troubleshooting
+
+- **Stale retrieval after infra changes** — `build_knowledge_base()` skips rebuild if Chroma already has data. Delete `chroma_data/` (or your `CHROMADB_PERSIST_DIR`) and restart FPM.
+- **Poller finds no alerts** — Start the mock server first (`python -m mock_server.run` or `./start.sh`).
+- **FPM exits immediately** — Set `OPENAI_API_KEY` in `.env` (see `.env.example`).
+- **Eval mismatches** — Keep `alert_templates.py`, `ground_truth.py`, and `infrastructure/` control IDs in sync.
+
+## Changing the system
+
+| Change | Start here |
+|--------|------------|
+| Verdict / agent behavior | `fpm/agents/orchestrator.py`, `fpm/agents/specialists.py` |
+| Retrieval | `fpm/retrieval/hybrid_search.py`, `fpm/retrieval/query_rewriter.py` |
+| New alert scenario | `mock_server/alert_templates.py`, `evaluation/ground_truth.py`, `infrastructure/` |
+| New config format | `fpm/parsers/`, `fpm/knowledge/builder.py` |
+| Mock API | `mock_server/server.py` |
+
+See also the change guide in [AGENTS.md](AGENTS.md).
 
 ## Multi-Agent System
 
